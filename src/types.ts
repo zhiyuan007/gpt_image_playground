@@ -108,6 +108,8 @@ export interface AppSettings {
   agentMaxToolRounds: number
   agentWebSearch: boolean
   agentMathFormattingPrompt: boolean
+  /** 开启后，符合条件的文生图任务交给同源后端后台托管，页面关闭后可恢复结果 */
+  backgroundHostedGeneration: boolean
   profiles: ApiProfile[]
   activeProfileId: string
 }
@@ -177,6 +179,10 @@ export interface TaskRecord {
   customTaskId?: string
   /** 自定义异步任务是否等待自动恢复 */
   customRecoverable?: boolean
+  /** 后台托管任务 ID，用于页面关闭后恢复同源后端任务结果 */
+  hostedJobId?: string
+  /** 后台托管任务是否等待自动恢复 */
+  hostedRecoverable?: boolean
   /** API 返回的实际生效参数，用于标记与请求值不一致的情况 */
   actualParams?: Partial<TaskParams>
   /** 输出图片对应的实际生效参数，key 为 outputImages 中的图片 id */

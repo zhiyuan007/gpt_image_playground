@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "job:server": "node server/image-jobs.mjs",
     "mock:api": "node scripts/mock-image-api.mjs",
     "build": "tsc -b && vite build",
     "deploy:cf": "npm run build && wrangler deploy",

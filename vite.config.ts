@@ -19,6 +19,18 @@ function loadDevProxyConfig() {
 
 export default defineConfig(({ command }) => {
   const devProxyConfig = command === 'serve' ? loadDevProxyConfig() : null
+  const hostedJobProxy = command === 'serve'
+    ? {
+        '/api/job-auth': {
+          target: 'http://127.0.0.1:3001',
+          changeOrigin: true,
+        },
+        '/api/image-jobs': {
+          target: 'http://127.0.0.1:3001',
+          changeOrigin: true,
+        },
+      }
+    : {}
 
   return {
     plugins: [react()],
@@ -30,8 +42,10 @@ export default defineConfig(({ command }) => {
     server: {
       host: true,
       proxy:
-        devProxyConfig?.enabled
-          ? {
+        {
+          ...hostedJobProxy,
+          ...(devProxyConfig?.enabled
+            ? {
               [devProxyConfig.prefix]: {
                 target: devProxyConfig.target,
                 changeOrigin: devProxyConfig.changeOrigin,
@@ -43,7 +57,8 @@ export default defineConfig(({ command }) => {
                   ),
               },
             }
-          : undefined,
+            : {}),
+        },
     },
   }
 })

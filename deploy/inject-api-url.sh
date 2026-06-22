@@ -48,4 +48,6 @@ if [ "$ENABLE_API_PROXY" != "true" ]; then
     sed -i '/# BEGIN API PROXY/,/# END API PROXY/d' /etc/nginx/conf.d/default.conf
 fi
 
+node /app/server/image-jobs.mjs &
+
 exec "$@"

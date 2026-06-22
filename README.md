@@ -221,8 +221,16 @@ $env:VITE_DEFAULT_API_URL="https://api.openai.com/v1"; npm run deploy:cf
 - `LOCK_API_PROXY`：设为 `true` 时，在 `ENABLE_API_PROXY=true` 的前提下将前端 **API 代理** 开关强制锁定为开启，用户无法关闭。
 - `SHOW_DEFAULT_CONFIG_ONLY`：设为 `true` 后，如果已配置默认 API URL 或默认代理，前端会禁用“当前配置”和“服务商类型”的下拉切换，只允许使用默认配置和默认服务商类型。通过页面 URL 参数传入的配置只会覆盖当前配置字段，不会新建配置、切换服务商类型或导入自定义服务商；`DEFAULT_API_URL` 本身仍可使用配置 URL 来定义部署端默认服务商。
 - `HOST` / `PORT`：指定容器内 Nginx 监听的地址和端口（默认 `0.0.0.0:80`）。
+- `JOB_ACCESS_PASSWORD`：设置后可在前端开启 **后台托管生成**。用户输入该权限密码后，符合条件的文生图任务会交给容器内置后台任务服务执行，页面关闭后仍可恢复结果。
+- `JOB_AUTH_TTL_HOURS`：后台托管权限 Cookie 有效期，默认 `168` 小时。
+- `JOB_RESULT_TTL_HOURS`：后台托管结果临时保留时间，默认 `24` 小时；前端领取结果后会立即清理。
+- `JOB_CONCURRENCY` / `JOB_MAX_PENDING`：后台托管并发数和最大排队数，默认分别为 `1` 和 `10`。
+- `JOB_RESULT_RATE_LIMIT_BYTES_PER_SECOND`：后台托管结果下载限速，默认约 `384000` 字节/秒（约 3 Mbit/s）。
+- `JOB_ALLOWED_BASE_URLS`：后台托管允许请求的 API URL 白名单，默认 `https://api.ciyuanshen.top/v1,https://ciyuanshen.top/v1`。
 
 > ⚠️ **安全警告**：开启 API 代理后，任何人都能将你的服务器作为代理来请求目标 API。建议仅在有访问控制（如 IP 白名单）或本地网络中开启。
+
+> ⚠️ **后台托管限制**：后台托管生成第一版仅支持 OpenAI 兼容 Images API 的文生图任务，且模型限制为 `gpt-image-2` / `gpt-image-2-1k` / `gpt-image-2-2k` / `gpt-image-2-4k`。暂不支持参考图、改图、遮罩、Responses API、fal.ai、自定义服务商或流式生成。
 
 > 💡 **导入自定义服务商配置**：`DEFAULT_API_URL` 除了填写普通 API 地址外，也支持直接填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL。设为配置 URL 时，页面启动后会自动导入其中的自定义服务商和 API 配置，设置页显示的是配置 JSON 中 profile 定义的 `baseUrl`（而非配置 URL 本身）。
 
@@ -310,6 +318,20 @@ services:
 npm install
 npm run dev
 ```
+
+如需本地测试 **后台托管生成**，另开一个终端启动任务服务：
+
+```bash
+JOB_ACCESS_PASSWORD=your-password npm run job:server
+```
+
+Windows PowerShell 可使用：
+
+```powershell
+$env:JOB_ACCESS_PASSWORD="your-password"; npm run job:server
+```
+
+前端开发服务器会将 `/api/job-auth` 和 `/api/image-jobs` 代理到 `http://127.0.0.1:3001`。
 
 **2. 本地开发跨域代理 (可选)**
 

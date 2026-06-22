@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { normalizeBaseUrl } from '../lib/api'
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
+import { authenticateHostedJobs, getHostedJobAuthStatus } from '../lib/hostedImageJobs'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
   createDefaultOpenAIProfile,
@@ -352,6 +353,9 @@ export default function SettingsModal() {
   const profileTouchDragRef = useRef<{ id: string, startX: number, startY: number, moved: boolean } | null>(null)
   const [copyImportUrlProfile, setCopyImportUrlProfile] = useState<ApiProfile | null>(null)
   const [copyImportUrlOptions, setCopyImportUrlOptions] = useState<CopyImportUrlOptions>(readCopyImportUrlOptions)
+  const [hostedAuthChecking, setHostedAuthChecking] = useState(false)
+  const [hostedAuthPassword, setHostedAuthPassword] = useState('')
+  const [showHostedAuthPassword, setShowHostedAuthPassword] = useState(false)
 
   const apiProxyConfig = readClientDevProxyConfig()
   const apiProxyAvailable = isApiProxyAvailable(apiProxyConfig)
@@ -550,6 +554,55 @@ export default function SettingsModal() {
     })
     setDraft(normalizedDraft)
     setSettings(normalizedDraft)
+  }
+
+  const setBackgroundHostedGeneration = async (enabled: boolean) => {
+    if (!enabled) {
+      setShowHostedAuthPassword(false)
+      setHostedAuthPassword('')
+      commitSettings({ ...draft, backgroundHostedGeneration: false })
+      return
+    }
+
+    setHostedAuthChecking(true)
+    try {
+      const status = await getHostedJobAuthStatus()
+      if (!status.authenticated) {
+        setShowHostedAuthPassword(true)
+        showToast('请输入后台托管权限密码', 'error')
+        return
+      }
+      commitSettings({ ...draft, backgroundHostedGeneration: true })
+      setShowHostedAuthPassword(false)
+      setHostedAuthPassword('')
+      showToast('后台托管生成已开启', 'success')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), 'error')
+    } finally {
+      setHostedAuthChecking(false)
+    }
+  }
+
+  const submitHostedAuthPassword = async () => {
+    const password = hostedAuthPassword.trim()
+    if (!password) {
+      showToast('请输入后台托管权限密码', 'error')
+      return
+    }
+
+    setHostedAuthChecking(true)
+    try {
+      await authenticateHostedJobs(password)
+      const nextDraft = { ...draft, backgroundHostedGeneration: true }
+      setShowHostedAuthPassword(false)
+      setHostedAuthPassword('')
+      commitSettings(nextDraft)
+      showToast('后台托管生成已开启', 'success')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), 'error')
+    } finally {
+      setHostedAuthChecking(false)
+    }
   }
 
   const setZipDownloadRouteEnabled = (route: ZipDownloadRoute, enabled: boolean) => {
@@ -1720,6 +1773,50 @@ export default function SettingsModal() {
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
                     {apiProxyLocked ? '部署端已锁定代理开启，请求经服务器转发到上游 API，上方 URL 设置将失效。' : '开启后请求经服务器转发到上游 API，可绕过浏览器跨域限制，上方 URL 设置将失效。'}
                   </div>
+                </div>
+              )}
+
+              {activeProviderIsOpenAICompatible && (
+                <div className="block">
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">后台托管生成</span>
+                    <button
+                      type="button"
+                      onClick={() => void setBackgroundHostedGeneration(!draft.backgroundHostedGeneration)}
+                      disabled={hostedAuthChecking}
+                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.backgroundHostedGeneration ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'} ${hostedAuthChecking ? 'cursor-wait opacity-70' : ''}`}
+                      role="switch"
+                      aria-checked={draft.backgroundHostedGeneration}
+                      aria-label="后台托管生成"
+                    >
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.backgroundHostedGeneration ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                    </button>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    开启后，文生图任务由同源后端后台完成，页面关闭后可恢复。第一版仅支持 Images API 文生图，不支持参考图、改图、遮罩或流式生成。
+                  </div>
+                  {showHostedAuthPassword && (
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        value={hostedAuthPassword}
+                        onChange={(e) => setHostedAuthPassword(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void submitHostedAuthPassword()
+                        }}
+                        type="password"
+                        placeholder="权限密码"
+                        className="min-w-0 flex-1 rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void submitHostedAuthPassword()}
+                        disabled={hostedAuthChecking}
+                        className="shrink-0 rounded-xl bg-blue-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-600 disabled:cursor-wait disabled:opacity-60"
+                      >
+                        验证并开启
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 

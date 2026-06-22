@@ -49,6 +49,7 @@ import { showBrowserNotification } from './lib/browserNotification'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
+import { deleteHostedImageJob, getHostedImageJobResult, getHostedImageJobStatus } from './lib/hostedImageJobs'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
@@ -73,11 +74,13 @@ const MAX_THUMBNAIL_CACHE_ENTRIES = 80
 const MAX_THUMBNAIL_BACKFILL_CONCURRENT = 4
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
+const HOSTED_JOB_RECOVERY_POLL_MS = 5_000
 const SUPPORT_PROMPT_IMAGE_THRESHOLD = 50
 const AGENT_INPUT_DRAFT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000
 const AGENT_ROUND_IMAGE_MENTION_RE = /@(?:第)?(\d+)轮图(\d+)/g
 const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const hostedJobRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const agentRoundControllers = new Map<string, AbortController>()
 let agentConversationPersistenceReady = false
@@ -1697,7 +1700,7 @@ function isAsyncCustomProviderTask(settings: AppSettings, provider: string, hasI
 export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now = Date.now()) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
-    if (!isRunningOpenAITask(task) || task.customTaskId) return task
+    if (!isRunningOpenAITask(task) || task.customTaskId || task.hostedJobId) return task
 
     const updated: TaskRecord = {
       ...task,
@@ -1934,6 +1937,21 @@ function scheduleCustomRecovery(taskId: string, delayMs = CUSTOM_RECOVERY_POLL_M
   customRecoveryTimers.set(taskId, timer)
 }
 
+function clearHostedJobRecoveryTimer(taskId: string) {
+  const timer = hostedJobRecoveryTimers.get(taskId)
+  if (timer) clearTimeout(timer)
+  hostedJobRecoveryTimers.delete(taskId)
+}
+
+function scheduleHostedJobRecovery(taskId: string, delayMs = HOSTED_JOB_RECOVERY_POLL_MS) {
+  if (hostedJobRecoveryTimers.has(taskId)) return
+  const timer = setTimeout(() => {
+    hostedJobRecoveryTimers.delete(taskId)
+    recoverHostedJobTask(taskId)
+  }, delayMs)
+  hostedJobRecoveryTimers.set(taskId, timer)
+}
+
 function hasActualParams(params: Partial<TaskParams> | undefined): params is Partial<TaskParams> {
   return Boolean(params && Object.keys(params).length > 0)
 }
@@ -2146,6 +2164,12 @@ export async function initStore() {
       (task.status === 'running' || task.customRecoverable)
     ) {
       scheduleCustomRecovery(task.id, 0)
+    }
+    if (
+      task.hostedJobId &&
+      (task.status === 'running' || task.hostedRecoverable)
+    ) {
+      scheduleHostedJobRecovery(task.id, 0)
     }
   }
 
@@ -4184,6 +4208,12 @@ async function executeTask(taskId: string) {
           customRecoverable: false,
         })
       },
+      onHostedJobCreated: (job) => {
+        updateTaskInStore(taskId, {
+          hostedJobId: job.jobId,
+          hostedRecoverable: true,
+        })
+      },
       onPartialImage: (partial) => {
         useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex)
         void persistTaskStreamPartialImage(taskId, partial.image)
@@ -4304,6 +4334,15 @@ async function executeTask(taskId: string) {
         elapsed: Date.now() - task.createdAt,
       })
       scheduleCustomRecovery(taskId)
+    } else if (latestTask.hostedJobId && isFalConnectionRecoverableError(err)) {
+      updateTaskInStore(taskId, {
+        status: 'error',
+        error: '与后台托管任务的连接已断开，之后会继续查询任务结果。',
+        hostedRecoverable: true,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+      scheduleHostedJobRecovery(taskId)
     } else {
       let errorMessage = err instanceof Error ? err.message : String(err)
       const settings = useStore.getState().settings
@@ -4841,6 +4880,117 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
   })
   useStore.getState().showToast(`自定义异步任务已恢复，共 ${outputIds.length} 张图片`, 'success')
   if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `自定义异步任务已恢复，共 ${outputIds.length} 张图片。`)
+}
+
+async function completeRecoveredHostedJobTask(task: TaskRecord, result: Awaited<ReturnType<typeof getHostedImageJobResult>>) {
+  const latest = useStore.getState().tasks.find((item) => item.id === task.id)
+  if (!latest || latest.status === 'done') return
+
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+  const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, result.actualParamsList, outputImageSizes)
+  const firstParams = firstActualParams(actualParamsList)
+  const actualParams = {
+    ...result.actualParams,
+    size: result.actualParams?.size ?? firstParams?.size,
+    n: outputIds.length,
+  }
+  const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
+  const revisedPromptByImage = result.revisedPrompts?.reduce<Record<string, string>>((acc, revisedPrompt, index) => {
+    const imgId = outputIds[index]
+    if (imgId && revisedPrompt && revisedPrompt.trim()) acc[imgId] = revisedPrompt
+    return acc
+  }, {})
+
+  updateTaskInStore(task.id, {
+    outputImages: outputIds,
+    transparentOriginalImages: transparentOriginalImageIds,
+    outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
+    rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
+    actualParams: Object.keys(actualParams).length ? actualParams : undefined,
+    actualParamsByImage,
+    revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
+    status: 'done',
+    error: null,
+    hostedRecoverable: false,
+    finishedAt: Date.now(),
+    elapsed: Date.now() - task.createdAt,
+  })
+  if (task.hostedJobId) void deleteHostedImageJob(task.hostedJobId)
+  useStore.getState().showToast(`后台托管任务已恢复，共 ${outputIds.length} 张图片`, 'success')
+  if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `后台托管任务已恢复，共 ${outputIds.length} 张图片。`)
+}
+
+async function recoverHostedJobTask(taskId: string) {
+  const task = useStore.getState().tasks.find((item) => item.id === taskId)
+  if (!task || !task.hostedJobId || task.status === 'done') return
+
+  try {
+    const status = await getHostedImageJobStatus(task.hostedJobId)
+    if (status.state === 'queued' || status.state === 'running') {
+      if (task.status !== 'running') {
+        updateTaskInStore(taskId, {
+          status: 'running',
+          error: null,
+          hostedRecoverable: true,
+          finishedAt: null,
+          elapsed: null,
+        })
+      }
+      scheduleHostedJobRecovery(taskId)
+      return
+    }
+    if (status.state === 'expired') {
+      clearHostedJobRecoveryTimer(taskId)
+      updateTaskInStore(taskId, {
+        status: 'error',
+        error: '后台托管任务结果已过期，请重新生成。',
+        hostedRecoverable: false,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+      return
+    }
+    if (status.state === 'error') {
+      clearHostedJobRecoveryTimer(taskId)
+      updateTaskInStore(taskId, {
+        status: 'error',
+        error: status.error || '后台托管任务失败',
+        hostedRecoverable: false,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+      return
+    }
+
+    const result = await getHostedImageJobResult(task.hostedJobId)
+    clearHostedJobRecoveryTimer(taskId)
+    await completeRecoveredHostedJobTask(task, result)
+  } catch (err) {
+    const statusCode = typeof err === 'object' && err && 'statusCode' in err ? Number((err as { statusCode?: unknown }).statusCode) : 0
+    if (statusCode === 401 || statusCode === 403) {
+      clearHostedJobRecoveryTimer(taskId)
+      updateTaskInStore(taskId, {
+        status: 'error',
+        error: '后台托管权限已失效，请在设置中重新开启后台托管生成后重试。',
+        hostedRecoverable: false,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+      return
+    }
+    if (statusCode === 404 || statusCode === 410) {
+      clearHostedJobRecoveryTimer(taskId)
+      updateTaskInStore(taskId, {
+        status: 'error',
+        error: '后台托管任务不存在或结果已过期，请重新生成。',
+        hostedRecoverable: false,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - task.createdAt,
+      })
+      return
+    }
+    scheduleHostedJobRecovery(taskId)
+  }
 }
 
 async function recoverCustomTask(taskId: string) {
