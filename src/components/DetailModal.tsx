@@ -11,6 +11,7 @@ import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { replaceImageMentionsForApi } from '../lib/promptImageMentions'
+import { isHostedAuthActionError } from '../lib/hostedJobUi'
 import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashIcon } from './icons'
 
 import ViewportTooltip from './ViewportTooltip'
@@ -19,6 +20,7 @@ export default function DetailModal() {
   const tasks = useStore((s) => s.tasks)
   const detailTaskId = useStore((s) => s.detailTaskId)
   const setDetailTaskId = useStore((s) => s.setDetailTaskId)
+  const setShowSettings = useStore((s) => s.setShowSettings)
   const setLightboxImageId = useStore((s) => s.setLightboxImageId)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const showToast = useStore((s) => s.showToast)
@@ -270,6 +272,7 @@ export default function DetailModal() {
   const transparentOutputText = task.transparentOutput || task.params.transparent_output ? 'true' : 'false'
   const currentTransparentOutputFailed = Boolean(currentOutputImageId && task.transparentOutput && task.transparentOriginalImages?.[currentOutputImageIndex] === '')
   const outputCompressionText = task.params.output_compression == null ? '未设置' : String(task.params.output_compression)
+  const showHostedAuthAction = task.status === 'error' && isHostedAuthActionError(task.error)
 
   const formatTime = (ts: number | null) => {
     if (!ts) return ''
@@ -321,6 +324,11 @@ export default function DetailModal() {
     } catch (err) {
       showToast(getClipboardFailureMessage('复制报错失败', err), 'error')
     }
+  }
+
+  const handleOpenHostedAuthSettings = () => {
+    setDetailTaskId(null)
+    setShowSettings(true, 'api')
   }
 
   const handleCopyPrompt = async () => {
@@ -790,6 +798,15 @@ export default function DetailModal() {
                       复制图片链接
                     </ViewportTooltip>
                   </div>
+                )}
+                {showHostedAuthAction && (
+                  <button
+                    type="button"
+                    onClick={handleOpenHostedAuthSettings}
+                    className="inline-flex items-center justify-center rounded-full border border-cyan-200/80 bg-cyan-50 px-3 py-1.5 text-sm font-medium text-cyan-700 transition hover:bg-cyan-100 dark:border-cyan-500/20 dark:bg-cyan-500/10 dark:text-cyan-300 dark:hover:bg-cyan-500/20"
+                  >
+                    去设置验证
+                  </button>
                 )}
                 {streamPartialImageIds.length > 0 && (
                   <div className="relative group">

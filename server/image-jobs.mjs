@@ -15,6 +15,7 @@ const CONCURRENCY = Math.max(1, Number(process.env.JOB_CONCURRENCY || 1))
 const MAX_STORAGE_BYTES = Math.max(10 * 1024 * 1024, Number(process.env.JOB_MAX_STORAGE_BYTES || 1024 * 1024 * 1024))
 const RESULT_RATE_LIMIT_BYTES = Math.max(64 * 1024, Number(process.env.JOB_RESULT_RATE_LIMIT_BYTES_PER_SECOND || 375 * 1024))
 const UPSTREAM_TIMEOUT_MS = Math.max(30, Number(process.env.JOB_UPSTREAM_TIMEOUT_SECONDS || 900)) * 1000
+const MAX_IMAGE_INPUT_PAYLOAD_BYTES = Math.max(1024 * 1024, Number(process.env.JOB_MAX_IMAGE_INPUT_PAYLOAD_BYTES || 512 * 1024 * 1024))
 const JOB_DATA_DIR = process.env.JOB_DATA_DIR || '/tmp/gpt-image-playground-jobs'
 const ALLOWED_BASE_URLS = (process.env.JOB_ALLOWED_BASE_URLS || 'https://api.ciyuanshen.top/v1,https://ciyuanshen.top/v1')
   .split(',')
@@ -48,6 +49,10 @@ function normalizeBaseUrl(value) {
 function isAllowedBaseUrl(value) {
   const normalized = normalizeBaseUrl(value)
   return Boolean(normalized && ALLOWED_BASE_URLS.includes(normalized))
+}
+
+function formatAllowedBaseUrls() {
+  return ALLOWED_BASE_URLS.join('、')
 }
 
 function sign(value) {
@@ -210,6 +215,52 @@ function getMime(format) {
   return 'image/png'
 }
 
+function dataUrlToBlobFile(dataUrl, fallbackName) {
+  if (typeof dataUrl !== 'string') throw new Error('图片数据格式无效')
+  const match = dataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/s)
+  if (!match) throw new Error('图片必须是 data URL')
+  const mime = match[1] || 'image/png'
+  const isBase64 = Boolean(match[2])
+  const payload = match[3] || ''
+  const buffer = isBase64 ? Buffer.from(payload.replace(/\s/g, ''), 'base64') : Buffer.from(decodeURIComponent(payload), 'utf8')
+  const ext = mime.split('/')[1]?.replace('jpeg', 'jpg') || 'png'
+  return {
+    blob: new Blob([buffer], { type: mime }),
+    bytes: buffer.length,
+    filename: `${fallbackName}.${ext}`,
+  }
+}
+
+function appendImageApiFormField(form, key, value) {
+  if (value === undefined || value === null) return
+  form.append(key, String(value))
+}
+
+function createImageEditFormData(job) {
+  const form = new FormData()
+  appendImageApiFormField(form, 'model', job.model)
+  appendImageApiFormField(form, 'prompt', job.prompt)
+  appendImageApiFormField(form, 'size', job.params.size)
+  appendImageApiFormField(form, 'quality', job.params.quality)
+  appendImageApiFormField(form, 'output_format', job.params.output_format)
+  appendImageApiFormField(form, 'moderation', job.params.moderation)
+  if (job.params.output_compression != null && job.params.output_format !== 'png') {
+    appendImageApiFormField(form, 'output_compression', job.params.output_compression)
+  }
+  if (job.params.n > 1) appendImageApiFormField(form, 'n', job.params.n)
+  if (job.responseFormatB64Json) appendImageApiFormField(form, 'response_format', 'b64_json')
+
+  for (let i = 0; i < job.inputImageDataUrls.length; i++) {
+    const file = dataUrlToBlobFile(job.inputImageDataUrls[i], `input-${i + 1}`)
+    form.append('image[]', file.blob, file.filename)
+  }
+  if (job.maskDataUrl) {
+    const mask = dataUrlToBlobFile(job.maskDataUrl, 'mask')
+    form.append('mask', mask.blob, mask.filename)
+  }
+  return form
+}
+
 async function runJob(job) {
   activeCount += 1
   job.state = 'running'
@@ -218,27 +269,35 @@ async function runJob(job) {
   const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
 
   try {
-    const body = {
-      model: job.model,
-      prompt: job.prompt,
-      size: job.params.size,
-      quality: job.params.quality,
-      output_format: job.params.output_format,
-      moderation: job.params.moderation,
-    }
-    if (job.params.output_compression != null && job.params.output_format !== 'png') body.output_compression = job.params.output_compression
-    if (job.params.n > 1) body.n = job.params.n
-    if (job.responseFormatB64Json) body.response_format = 'b64_json'
-
-    const response = await fetch(`${job.baseUrl}/images/generations`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${job.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
+    const isEdit = job.inputImageDataUrls.length > 0 || Boolean(job.maskDataUrl)
+    const response = isEdit
+      ? await fetch(`${job.baseUrl}/images/edits`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${job.apiKey}`,
+          },
+          body: createImageEditFormData(job),
+          signal: controller.signal,
+        })
+      : await fetch(`${job.baseUrl}/images/generations`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${job.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: job.model,
+            prompt: job.prompt,
+            size: job.params.size,
+            quality: job.params.quality,
+            output_format: job.params.output_format,
+            moderation: job.params.moderation,
+            ...(job.params.output_compression != null && job.params.output_format !== 'png' ? { output_compression: job.params.output_compression } : {}),
+            ...(job.params.n > 1 ? { n: job.params.n } : {}),
+            ...(job.responseFormatB64Json ? { response_format: 'b64_json' } : {}),
+          }),
+          signal: controller.signal,
+        })
     const text = await response.text()
     const payload = text ? safeJsonParse(text) : null
     if (!response.ok) {
@@ -261,6 +320,8 @@ async function runJob(job) {
   } finally {
     clearTimeout(timer)
     job.apiKey = ''
+    job.inputImageDataUrls = []
+    job.maskDataUrl = undefined
     activeCount -= 1
     processQueue()
     void cleanupExpiredJobs()
@@ -307,11 +368,19 @@ async function cleanupExpiredJobs() {
 function validateCreatePayload(payload) {
   if (!payload || typeof payload !== 'object') throw Object.assign(new Error('请求格式无效'), { statusCode: 400 })
   const baseUrl = normalizeBaseUrl(payload.baseUrl)
-  if (!isAllowedBaseUrl(baseUrl)) throw Object.assign(new Error('后台托管不允许请求此 API URL'), { statusCode: 400 })
+  if (!isAllowedBaseUrl(baseUrl)) throw Object.assign(new Error(`后台托管不允许请求此 API URL。请填写完整 /v1 地址；当前允许：${formatAllowedBaseUrls()}`), { statusCode: 400 })
   if (typeof payload.apiKey !== 'string' || !payload.apiKey.trim()) throw Object.assign(new Error('缺少 API Key'), { statusCode: 400 })
   if (typeof payload.prompt !== 'string' || !payload.prompt.trim()) throw Object.assign(new Error('缺少提示词'), { statusCode: 400 })
   if (typeof payload.model !== 'string' || !payload.model.trim()) throw Object.assign(new Error('缺少模型名称'), { statusCode: 400 })
   if (!/^gpt-image-2(?:-(?:1k|2k|4k))?$/.test(payload.model.trim())) throw Object.assign(new Error('后台托管第一版仅允许 gpt-image-2 系列模型'), { statusCode: 400 })
+  const inputImageDataUrls = Array.isArray(payload.inputImageDataUrls)
+    ? payload.inputImageDataUrls.filter((item) => typeof item === 'string' && item.startsWith('data:'))
+    : []
+  if (inputImageDataUrls.length > 16) throw Object.assign(new Error('后台托管最多支持 16 张参考图'), { statusCode: 400 })
+  const maskDataUrl = typeof payload.maskDataUrl === 'string' && payload.maskDataUrl.startsWith('data:') ? payload.maskDataUrl : undefined
+  if (maskDataUrl && inputImageDataUrls.length === 0) throw Object.assign(new Error('遮罩任务必须包含主图'), { statusCode: 400 })
+  const inputPayloadBytes = inputImageDataUrls.reduce((sum, item) => sum + item.length, 0) + (maskDataUrl?.length || 0)
+  if (inputPayloadBytes > MAX_IMAGE_INPUT_PAYLOAD_BYTES) throw Object.assign(new Error('参考图或遮罩数据过大'), { statusCode: 413 })
   const params = payload.params && typeof payload.params === 'object' ? payload.params : {}
   return {
     baseUrl,
@@ -319,6 +388,8 @@ function validateCreatePayload(payload) {
     model: payload.model.trim(),
     prompt: payload.prompt.trim(),
     responseFormatB64Json: payload.responseFormatB64Json === true,
+    inputImageDataUrls,
+    maskDataUrl,
     params: {
       size: typeof params.size === 'string' && params.size ? params.size : 'auto',
       quality: ['auto', 'low', 'medium', 'high'].includes(params.quality) ? params.quality : 'auto',
@@ -347,6 +418,21 @@ async function sendThrottledFile(res, filePath, onDone) {
 
 async function handle(req, res) {
   const url = new URL(req.url || '/', 'http://localhost')
+
+  if (url.pathname === '/api/image-jobs/health' && req.method === 'GET') {
+    sendJson(res, 200, {
+      ok: true,
+      authConfigured: Boolean(ACCESS_PASSWORD),
+      queue: {
+        active: activeCount,
+        queued: queue.length,
+        concurrency: CONCURRENCY,
+        maxPending: MAX_PENDING,
+        availableSlots: Math.max(0, MAX_PENDING + CONCURRENCY - activeCount - queue.length),
+      },
+    })
+    return
+  }
 
   if (url.pathname === '/api/job-auth/status' && req.method === 'GET') {
     const session = getSession(req)
@@ -382,7 +468,7 @@ async function handle(req, res) {
       sendError(res, 429, '后台托管队列已满，请稍后再试')
       return
     }
-    const payload = validateCreatePayload(await readRequestJson(req, 2 * 1024 * 1024))
+    const payload = validateCreatePayload(await readRequestJson(req, MAX_IMAGE_INPUT_PAYLOAD_BYTES + 1024 * 1024))
     const id = createJobId()
     const job = {
       id,

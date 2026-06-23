@@ -5,6 +5,7 @@ import { formatImageRatio } from '../lib/size'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL } from '../lib/apiProfiles'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
+import { getHostedTaskBadgeLabel } from '../lib/hostedJobUi'
 import { CodeIcon, TransparentBgIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
 
@@ -325,6 +326,7 @@ export default function TaskCard({
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
   const isInterrupted = task.status === 'error' && task.error === '已停止生成。'
+  const hostedTaskBadgeLabel = getHostedTaskBadgeLabel(task)
 
   return (
     <div className="relative rounded-xl">
@@ -560,6 +562,14 @@ export default function TaskCard({
               onTouchCancel={(e) => e.stopPropagation()}
             >
               {/* API Name */}
+              {hostedTaskBadgeLabel && (
+                <span
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-cyan-50 dark:bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 text-xs flex-shrink-0"
+                  title="此任务由后台托管生成，可在页面关闭后恢复"
+                >
+                  {hostedTaskBadgeLabel}
+                </span>
+              )}
               {(task.apiProfileName || task.apiProvider) && (
                 <span 
                   className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-gray-600 dark:text-gray-300 text-xs flex-shrink-0"

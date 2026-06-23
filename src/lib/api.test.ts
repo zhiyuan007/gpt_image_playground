@@ -263,6 +263,71 @@ describe('callImageApi', () => {
     })
   })
 
+  it('requires a valid hosted job auth session before creating a hosted image job', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        authConfigured: true,
+        queue: { active: 0, queued: 0, concurrency: 1, maxPending: 10, availableSlots: 11 },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        authenticated: false,
+        expiresAt: null,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+    await expect(callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', backgroundHostedGeneration: true },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow('后台托管权限已失效')
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/image-jobs/health', expect.objectContaining({
+      credentials: 'include',
+      cache: 'no-store',
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/job-auth/status', expect.objectContaining({
+      credentials: 'include',
+      cache: 'no-store',
+    }))
+  })
+
+  it('reports hosted job service availability errors instead of generic image API network errors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
+
+    await expect(callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', backgroundHostedGeneration: true },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow('后台托管服务不可达')
+  })
+
+  it('reports an unconfigured hosted job password before creating a hosted image job', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      authConfigured: false,
+      queue: { active: 0, queued: 0, concurrency: 1, maxPending: 10, availableSlots: 11 },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', backgroundHostedGeneration: true },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow('服务器未配置 JOB_ACCESS_PASSWORD')
+  })
+
   it('parses Images API stream result events with data b64_json', async () => {
     const streamBody = [
       'data: {"object":"image.generation.chunk","created":1779551054,"model":"gpt-image-2"}',

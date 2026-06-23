@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { normalizeBaseUrl } from '../lib/api'
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
-import { authenticateHostedJobs, getHostedJobAuthStatus } from '../lib/hostedImageJobs'
+import { authenticateHostedJobs, getHostedJobAuthStatus, getHostedJobServiceHealth, normalizeHostedJobError } from '../lib/hostedImageJobs'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
   createDefaultOpenAIProfile,
@@ -356,6 +356,7 @@ export default function SettingsModal() {
   const [hostedAuthChecking, setHostedAuthChecking] = useState(false)
   const [hostedAuthPassword, setHostedAuthPassword] = useState('')
   const [showHostedAuthPassword, setShowHostedAuthPassword] = useState(false)
+  const [hostedAuthMessage, setHostedAuthMessage] = useState('')
 
   const apiProxyConfig = readClientDevProxyConfig()
   const apiProxyAvailable = isApiProxyAvailable(apiProxyConfig)
@@ -443,6 +444,43 @@ export default function SettingsModal() {
   useEffect(() => {
     setTimeoutInput(String(activeProfile.timeout))
   }, [activeProfile.id, activeProfile.timeout])
+
+  useEffect(() => {
+    if (!showSettings || !draft.backgroundHostedGeneration) return
+
+    let cancelled = false
+    setHostedAuthChecking(true)
+    getHostedJobServiceHealth()
+      .then(async (health) => {
+        if (cancelled) return
+        if (!health.authConfigured) {
+          setShowHostedAuthPassword(false)
+          setHostedAuthMessage('服务器未配置 JOB_ACCESS_PASSWORD，后台托管生成功能不可用。')
+          return
+        }
+        const status = await getHostedJobAuthStatus()
+        if (cancelled) return
+        if (!status.authenticated) {
+          setShowHostedAuthPassword(true)
+          setHostedAuthMessage('后台托管权限已失效，请重新输入权限密码。')
+          return
+        }
+        setShowHostedAuthPassword(false)
+        setHostedAuthMessage('')
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setShowHostedAuthPassword(true)
+        setHostedAuthMessage(normalizeHostedJobError(err).message)
+      })
+      .finally(() => {
+        if (!cancelled) setHostedAuthChecking(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [showSettings, draft.backgroundHostedGeneration])
 
   useEffect(() => {
     if (showSettings && settingsTabRequest) setActiveTab(settingsTabRequest)
@@ -560,24 +598,37 @@ export default function SettingsModal() {
     if (!enabled) {
       setShowHostedAuthPassword(false)
       setHostedAuthPassword('')
+      setHostedAuthMessage('')
       commitSettings({ ...draft, backgroundHostedGeneration: false })
       return
     }
 
     setHostedAuthChecking(true)
     try {
+      const health = await getHostedJobServiceHealth()
+      if (!health.authConfigured) {
+        setShowHostedAuthPassword(false)
+        setHostedAuthMessage('服务器未配置 JOB_ACCESS_PASSWORD，后台托管生成功能不可用。')
+        showToast('服务器未配置 JOB_ACCESS_PASSWORD，后台托管生成功能不可用。', 'error')
+        return
+      }
       const status = await getHostedJobAuthStatus()
       if (!status.authenticated) {
         setShowHostedAuthPassword(true)
+        setHostedAuthMessage('后台托管权限已失效，请输入权限密码。')
         showToast('请输入后台托管权限密码', 'error')
         return
       }
       commitSettings({ ...draft, backgroundHostedGeneration: true })
       setShowHostedAuthPassword(false)
       setHostedAuthPassword('')
+      setHostedAuthMessage('')
       showToast('后台托管生成已开启', 'success')
     } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), 'error')
+      const message = normalizeHostedJobError(err).message
+      setShowHostedAuthPassword(true)
+      setHostedAuthMessage(message)
+      showToast(message, 'error')
     } finally {
       setHostedAuthChecking(false)
     }
@@ -596,10 +647,13 @@ export default function SettingsModal() {
       const nextDraft = { ...draft, backgroundHostedGeneration: true }
       setShowHostedAuthPassword(false)
       setHostedAuthPassword('')
+      setHostedAuthMessage('')
       commitSettings(nextDraft)
       showToast('后台托管生成已开启', 'success')
     } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), 'error')
+      const message = err instanceof Error ? err.message : String(err)
+      setHostedAuthMessage(message)
+      showToast(message, 'error')
     } finally {
       setHostedAuthChecking(false)
     }
@@ -1793,8 +1847,13 @@ export default function SettingsModal() {
                     </button>
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    开启后，文生图任务由同源后端后台完成，页面关闭后可恢复。第一版仅支持 Images API 文生图，不支持参考图、改图、遮罩或流式生成。
+                    开启后，Images API 任务由同源后端后台完成，页面关闭后可恢复。支持文生图、参考图和遮罩；暂不支持 Responses API、fal.ai、自定义服务商或流式生成。默认后台白名单要求 API URL 填写到 /v1。
                   </div>
+                  {hostedAuthMessage && (
+                    <div data-selectable-text className="mt-1.5 text-xs text-rose-500 dark:text-rose-300">
+                      {hostedAuthMessage}
+                    </div>
+                  )}
                   {showHostedAuthPassword && (
                     <div className="mt-2 flex gap-2">
                       <input

@@ -213,6 +213,12 @@ $env:VITE_DEFAULT_API_URL="https://api.openai.com/v1"; npm run deploy:cf
 
 官方镜像已发布至 GitHub Container Registry。Docker 部署支持在运行时注入默认配置。
 
+可先复制 [deploy/docker.env.example](deploy/docker.env.example) 作为自己的环境变量文件；该文件包含每个配置参数的中文注释：
+
+```bash
+cp deploy/docker.env.example .env
+```
+
 **环境变量说明：**
 
 - `DEFAULT_API_URL`：设置页面上默认显示的 API 地址（如 `https://api.openai.com/v1`）。也支持填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL 来导入自定义服务商配置（详见下方说明）。
@@ -221,16 +227,20 @@ $env:VITE_DEFAULT_API_URL="https://api.openai.com/v1"; npm run deploy:cf
 - `LOCK_API_PROXY`：设为 `true` 时，在 `ENABLE_API_PROXY=true` 的前提下将前端 **API 代理** 开关强制锁定为开启，用户无法关闭。
 - `SHOW_DEFAULT_CONFIG_ONLY`：设为 `true` 后，如果已配置默认 API URL 或默认代理，前端会禁用“当前配置”和“服务商类型”的下拉切换，只允许使用默认配置和默认服务商类型。通过页面 URL 参数传入的配置只会覆盖当前配置字段，不会新建配置、切换服务商类型或导入自定义服务商；`DEFAULT_API_URL` 本身仍可使用配置 URL 来定义部署端默认服务商。
 - `HOST` / `PORT`：指定容器内 Nginx 监听的地址和端口（默认 `0.0.0.0:80`）。
-- `JOB_ACCESS_PASSWORD`：设置后可在前端开启 **后台托管生成**。用户输入该权限密码后，符合条件的文生图任务会交给容器内置后台任务服务执行，页面关闭后仍可恢复结果。
+- `JOB_ACCESS_PASSWORD`：设置后可在前端开启 **后台托管生成**。用户输入该权限密码后，符合条件的 Images API 任务会交给容器内置后台任务服务执行，页面关闭后仍可恢复结果。
+- `JOB_AUTH_SECRET`：后台托管权限 Cookie 的签名密钥。生产环境必须固定配置为一段随机长字符串；如果留空，每次后台任务服务重启都会随机生成新密钥，已验证的浏览器需要重新输入权限密码。
 - `JOB_AUTH_TTL_HOURS`：后台托管权限 Cookie 有效期，默认 `168` 小时。
 - `JOB_RESULT_TTL_HOURS`：后台托管结果临时保留时间，默认 `24` 小时；前端领取结果后会立即清理。
-- `JOB_CONCURRENCY` / `JOB_MAX_PENDING`：后台托管并发数和最大排队数，默认分别为 `1` 和 `10`。
+- `JOB_CONCURRENCY` / `JOB_MAX_PENDING`：后台托管并发数和最大排队数，默认分别为 `1` 和 `10`。个人或少数人使用建议保持 `JOB_CONCURRENCY=1`，避免上游并发和服务器带宽被打满。
 - `JOB_RESULT_RATE_LIMIT_BYTES_PER_SECOND`：后台托管结果下载限速，默认约 `384000` 字节/秒（约 3 Mbit/s）。
+- `JOB_MAX_IMAGE_INPUT_PAYLOAD_BYTES`：后台托管参考图/遮罩请求体上限，默认 `512 MiB`。
 - `JOB_ALLOWED_BASE_URLS`：后台托管允许请求的 API URL 白名单，默认 `https://api.ciyuanshen.top/v1,https://ciyuanshen.top/v1`。
 
 > ⚠️ **安全警告**：开启 API 代理后，任何人都能将你的服务器作为代理来请求目标 API。建议仅在有访问控制（如 IP 白名单）或本地网络中开启。
 
-> ⚠️ **后台托管限制**：后台托管生成第一版仅支持 OpenAI 兼容 Images API 的文生图任务，且模型限制为 `gpt-image-2` / `gpt-image-2-1k` / `gpt-image-2-2k` / `gpt-image-2-4k`。暂不支持参考图、改图、遮罩、Responses API、fal.ai、自定义服务商或流式生成。
+> ⚠️ **后台托管限制**：后台托管生成支持 OpenAI 兼容 Images API 的文生图、参考图和遮罩任务，且模型限制为 `gpt-image-2` / `gpt-image-2-1k` / `gpt-image-2-2k` / `gpt-image-2-4k`。暂不支持 Responses API、fal.ai、自定义服务商或流式生成。默认 URL 白名单要求 API URL 填写到 `/v1`。
+
+> 💡 **后台托管健康检查**：前端会先请求 `/api/image-jobs/health` 判断后台任务服务是否可用，再检查 `/api/job-auth/status`。如果部署时没有正确代理 `/api/image-jobs` 和 `/api/job-auth`，或没有配置 `JOB_ACCESS_PASSWORD`，设置页和生图错误会直接提示对应原因。
 
 > 💡 **导入自定义服务商配置**：`DEFAULT_API_URL` 除了填写普通 API 地址外，也支持直接填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL。设为配置 URL 时，页面启动后会自动导入其中的自定义服务商和 API 配置，设置页显示的是配置 JSON 中 profile 定义的 `baseUrl`（而非配置 URL 本身）。
 
@@ -249,6 +259,7 @@ $env:VITE_DEFAULT_API_URL="https://api.openai.com/v1"; npm run deploy:cf
 
 ```bash
 docker run -d -p 8080:80 \
+  --env-file .env \
   -e DEFAULT_API_URL=https://api.openai.com/v1 \
   -e ENABLE_API_PROXY=true \
   -e LOCK_API_PROXY=true \
@@ -290,6 +301,8 @@ docker run -d -p 8080:80 \
 services:
   gpt-image-playground:
     image: ghcr.io/cooksleep/gpt_image_playground:latest
+    env_file:
+      - .env
     environment:
       - DEFAULT_API_URL=https://api.openai.com/v1
     ports:
@@ -322,16 +335,16 @@ npm run dev
 如需本地测试 **后台托管生成**，另开一个终端启动任务服务：
 
 ```bash
-JOB_ACCESS_PASSWORD=your-password npm run job:server
+JOB_ACCESS_PASSWORD=your-password JOB_AUTH_SECRET=change-this-to-a-long-random-string npm run job:server
 ```
 
 Windows PowerShell 可使用：
 
 ```powershell
-$env:JOB_ACCESS_PASSWORD="your-password"; npm run job:server
+$env:JOB_ACCESS_PASSWORD="your-password"; $env:JOB_AUTH_SECRET="change-this-to-a-long-random-string"; npm run job:server
 ```
 
-前端开发服务器会将 `/api/job-auth` 和 `/api/image-jobs` 代理到 `http://127.0.0.1:3001`。
+前端开发服务器会将 `/api/job-auth`、`/api/image-jobs` 和 `/api/image-jobs/health` 代理到 `http://127.0.0.1:3001`。如果只是临时本地测试，可以省略 `JOB_AUTH_SECRET`；如果希望重启任务服务后仍保持已验证状态，需要固定该值。
 
 **2. 本地开发跨域代理 (可选)**
 
