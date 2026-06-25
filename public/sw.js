@@ -1,6 +1,16 @@
 const CACHE_NAME = 'gpt-image-playground-v0.1.5'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
 
+function shouldBypassCache(request) {
+  if (request.method !== 'GET') return true
+
+  const url = new URL(request.url)
+  if (url.origin !== self.location.origin) return true
+  if (request.mode === 'navigate') return false
+
+  return url.pathname.startsWith('/api/')
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)),
@@ -20,10 +30,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event
 
-  if (request.method !== 'GET') return
-
-  const url = new URL(request.url)
-  if (url.origin !== self.location.origin) return
+  if (shouldBypassCache(request)) return
 
   if (request.mode === 'navigate') {
     event.respondWith(

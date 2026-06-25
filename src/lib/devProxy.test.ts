@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildApiUrl } from './devProxy'
+import { shouldBypassServiceWorkerCache } from './serviceWorkerCache'
 
 describe('buildApiUrl', () => {
   it('uses the same-origin proxy prefix when API proxy is enabled', () => {
@@ -35,5 +36,31 @@ describe('buildApiUrl', () => {
     expect(buildApiUrl('http://api.example.com/v1', 'responses', null, false)).toBe(
       'http://api.example.com/v1/responses',
     )
+  })
+})
+
+describe('shouldBypassServiceWorkerCache', () => {
+  it('bypasses same-origin hosted auth status requests', () => {
+    expect(shouldBypassServiceWorkerCache({
+      method: 'GET',
+      mode: 'same-origin',
+      url: 'https://image.pumpkinheadgame.com/api/job-auth/status',
+    }, 'https://image.pumpkinheadgame.com')).toBe(true)
+  })
+
+  it('bypasses same-origin hosted job health requests', () => {
+    expect(shouldBypassServiceWorkerCache({
+      method: 'GET',
+      mode: 'same-origin',
+      url: 'https://image.pumpkinheadgame.com/api/image-jobs/health',
+    }, 'https://image.pumpkinheadgame.com')).toBe(true)
+  })
+
+  it('keeps same-origin static assets cacheable', () => {
+    expect(shouldBypassServiceWorkerCache({
+      method: 'GET',
+      mode: 'no-cors',
+      url: 'https://image.pumpkinheadgame.com/assets/index.js',
+    }, 'https://image.pumpkinheadgame.com')).toBe(false)
   })
 })
