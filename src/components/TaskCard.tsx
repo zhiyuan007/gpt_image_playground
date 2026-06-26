@@ -327,6 +327,7 @@ export default function TaskCard({
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
   const isInterrupted = task.status === 'error' && task.error === '已停止生成。'
   const hostedTaskBadgeLabel = getHostedTaskBadgeLabel(task)
+  const runningStatusLabel = task.hostedDownloading ? '下载结果中...' : '生成中...'
 
   return (
     <div className="relative rounded-xl">
@@ -440,7 +441,7 @@ export default function TaskCard({
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
                 />
               </svg>
-              <span className="text-xs text-gray-400 dark:text-gray-500">生成中...</span>
+              <span className="text-xs text-gray-400 dark:text-gray-500">{runningStatusLabel}</span>
             </div>
           )}
           {task.status === 'error' && isFalReconnecting && (

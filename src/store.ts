@@ -2374,7 +2374,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     }
   }
 
-  if (validateApiProfile(activeProfile)) {
+  if (!requestSettings.backgroundHostedGeneration && validateApiProfile(activeProfile)) {
     showToast(`请先完善请求 API 配置：${validateApiProfile(activeProfile)}`, 'error')
     useStore.getState().setShowSettings(true)
     return
@@ -4392,6 +4392,17 @@ async function executeTask(taskId: string) {
         updateTaskInStore(taskId, {
           hostedJobId: job.jobId,
           hostedRecoverable: true,
+          hostedDownloading: false,
+        })
+      },
+      onHostedJobResultDownloading: () => {
+        updateTaskInStore(taskId, {
+          status: 'running',
+          error: null,
+          hostedRecoverable: true,
+          hostedDownloading: true,
+          finishedAt: null,
+          elapsed: null,
         })
       },
       onPartialImage: (partial) => {
@@ -4466,6 +4477,8 @@ async function executeTask(taskId: string) {
       elapsed: Date.now() - task.createdAt,
       falRecoverable: false,
       customRecoverable: false,
+      hostedRecoverable: false,
+      hostedDownloading: false,
     })
     void deleteUnreferencedImageIds(partialImageIdsToClean)
 
@@ -4519,6 +4532,7 @@ async function executeTask(taskId: string) {
         status: 'error',
         error: '与后台托管任务的连接已断开，之后会继续查询任务结果。',
         hostedRecoverable: true,
+        hostedDownloading: false,
         finishedAt: Date.now(),
         elapsed: Date.now() - task.createdAt,
       })
@@ -5071,6 +5085,7 @@ async function completeRecoveredHostedJobTask(task: TaskRecord, result: Awaited<
     status: 'done',
     error: null,
     hostedRecoverable: false,
+    hostedDownloading: false,
     finishedAt: Date.now(),
     elapsed: Date.now() - task.createdAt,
   })
@@ -5086,11 +5101,12 @@ async function recoverHostedJobTask(taskId: string) {
   try {
     const status = await getHostedImageJobStatus(task.hostedJobId)
     if (status.state === 'queued' || status.state === 'running') {
-      if (task.status !== 'running') {
+      if (task.status !== 'running' || task.hostedDownloading) {
         updateTaskInStore(taskId, {
           status: 'running',
           error: null,
           hostedRecoverable: true,
+          hostedDownloading: false,
           finishedAt: null,
           elapsed: null,
         })
@@ -5104,6 +5120,7 @@ async function recoverHostedJobTask(taskId: string) {
         status: 'error',
         error: '后台托管任务结果已过期，请重新生成。',
         hostedRecoverable: false,
+        hostedDownloading: false,
         finishedAt: Date.now(),
         elapsed: Date.now() - task.createdAt,
       })
@@ -5115,12 +5132,21 @@ async function recoverHostedJobTask(taskId: string) {
         status: 'error',
         error: status.error || '后台托管任务失败',
         hostedRecoverable: false,
+        hostedDownloading: false,
         finishedAt: Date.now(),
         elapsed: Date.now() - task.createdAt,
       })
       return
     }
 
+    updateTaskInStore(taskId, {
+      status: 'running',
+      error: null,
+      hostedRecoverable: true,
+      hostedDownloading: true,
+      finishedAt: null,
+      elapsed: null,
+    })
     const result = await getHostedImageJobResult(task.hostedJobId)
     clearHostedJobRecoveryTimer(taskId)
     await completeRecoveredHostedJobTask(task, result)
@@ -5132,6 +5158,7 @@ async function recoverHostedJobTask(taskId: string) {
         status: 'error',
         error: '后台托管权限已失效，请在设置中重新开启后台托管生成后重试。',
         hostedRecoverable: false,
+        hostedDownloading: false,
         finishedAt: Date.now(),
         elapsed: Date.now() - task.createdAt,
       })
@@ -5143,11 +5170,15 @@ async function recoverHostedJobTask(taskId: string) {
         status: 'error',
         error: '后台托管任务不存在或结果已过期，请重新生成。',
         hostedRecoverable: false,
+        hostedDownloading: false,
         finishedAt: Date.now(),
         elapsed: Date.now() - task.createdAt,
       })
       return
     }
+    updateTaskInStore(taskId, {
+      hostedDownloading: false,
+    })
     scheduleHostedJobRecovery(taskId)
   }
 }

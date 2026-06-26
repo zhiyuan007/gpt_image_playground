@@ -1374,7 +1374,61 @@ export default function SettingsModal() {
             
             {activeTab === 'api' && (
               <div className="space-y-4">
-                <div>
+                <div className="block rounded-2xl border border-gray-200/70 bg-white/70 p-4 dark:border-white/[0.08] dark:bg-white/[0.03]">
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">后台托管生成</span>
+                    <button
+                      type="button"
+                      onClick={() => void setBackgroundHostedGeneration(!draft.backgroundHostedGeneration)}
+                      disabled={hostedAuthChecking}
+                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.backgroundHostedGeneration ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'} ${hostedAuthChecking ? 'cursor-wait opacity-70' : ''}`}
+                      role="switch"
+                      aria-checked={draft.backgroundHostedGeneration}
+                      aria-label="后台托管生成"
+                    >
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.backgroundHostedGeneration ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                    </button>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    开启后，授权用户将直接使用服务器预置的托管配置，无需再填写 API URL、API Key、模型或服务商类型。页面关闭后仍可恢复任务结果。
+                  </div>
+                  {draft.backgroundHostedGeneration && (
+                    <div data-selectable-text className="mt-2 rounded-xl bg-blue-50/80 px-3 py-2 text-xs text-blue-700 dark:bg-blue-500/10 dark:text-blue-300">
+                      当前已切换为服务器预置托管配置，本地 API 配置项已隐藏。
+                    </div>
+                  )}
+                  {hostedAuthMessage && (
+                    <div data-selectable-text className="mt-2 text-xs text-rose-500 dark:text-rose-300">
+                      {hostedAuthMessage}
+                    </div>
+                  )}
+                  {showHostedAuthPassword && (
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        value={hostedAuthPassword}
+                        onChange={(e) => setHostedAuthPassword(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void submitHostedAuthPassword()
+                        }}
+                        type="password"
+                        placeholder="权限密码"
+                        className="min-w-0 flex-1 rounded-xl border border-gray-200/70 bg-white/60 px-3 py-2 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void submitHostedAuthPassword()}
+                        disabled={hostedAuthChecking}
+                        className="shrink-0 rounded-xl bg-blue-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-600 disabled:cursor-wait disabled:opacity-60"
+                      >
+                        验证并开启
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {!draft.backgroundHostedGeneration && (
+                  <>
+                  <div>
                   <div className="mb-1.5 flex items-center gap-1.5">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">当前配置</span>
                     <span className="relative inline-flex">
@@ -1634,7 +1688,7 @@ export default function SettingsModal() {
                 </div>
               )}
 
-              {activeProviderIsOpenAICompatible && (
+              {false && activeProviderIsOpenAICompatible && (
                 <div className="block">
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">后台托管生成</span>
@@ -1881,6 +1935,8 @@ export default function SettingsModal() {
                   />
                 </label>
               )}
+                  </>
+                )}
             </div>
             )}
             

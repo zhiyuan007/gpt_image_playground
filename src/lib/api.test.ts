@@ -371,6 +371,76 @@ describe('callImageApi', () => {
     })).rejects.toThrow('服务器未配置 JOB_ACCESS_PASSWORD')
   })
 
+  it('submits hosted image jobs without local API profile fields', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        authConfigured: true,
+        queue: { active: 0, queued: 0, concurrency: 1, maxPending: 10, availableSlots: 11 },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        authenticated: true,
+        expiresAt: Date.now() + 60_000,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        jobId: 'job-1',
+        status: { id: 'job-1', state: 'done' },
+      }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'job-1',
+        state: 'done',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        images: ['data:image/png;base64,aW1hZ2U='],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+    await expect(callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        apiKey: '',
+        backgroundHostedGeneration: true,
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          provider: 'fal',
+          baseUrl: '',
+          apiKey: '',
+          model: '',
+        }],
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).resolves.toEqual({
+      images: ['data:image/png;base64,aW1hZ2U='],
+    })
+
+    const [, init] = fetchMock.mock.calls[2]
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body).toMatchObject({
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+    expect(body.baseUrl).toBeUndefined()
+    expect(body.apiKey).toBeUndefined()
+    expect(body.model).toBeUndefined()
+  })
+
   it('parses Images API stream result events with data b64_json', async () => {
     const streamBody = [
       'data: {"object":"image.generation.chunk","created":1779551054,"model":"gpt-image-2"}',

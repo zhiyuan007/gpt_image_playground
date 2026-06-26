@@ -141,9 +141,6 @@ export function createHostedImageJob(opts: {
   return requestJson<{ jobId: string; status: HostedJobStatus }>('/api/image-jobs', {
     method: 'POST',
     body: JSON.stringify({
-      baseUrl: opts.profile.baseUrl,
-      apiKey: opts.profile.apiKey,
-      model: opts.profile.model,
       prompt: opts.prompt,
       params: opts.params,
       inputImageDataUrls: opts.inputImageDataUrls,
@@ -167,10 +164,16 @@ export async function deleteHostedImageJob(jobId: string): Promise<void> {
   })
 }
 
-export async function waitForHostedImageJob(jobId: string): Promise<CallApiResult> {
+export async function waitForHostedImageJob(
+  jobId: string,
+  opts?: { onResultDownloading?: (job: { jobId: string }) => void },
+): Promise<CallApiResult> {
   while (true) {
     const status = await getHostedImageJobStatus(jobId)
-    if (status.state === 'done') return getHostedImageJobResult(jobId)
+    if (status.state === 'done') {
+      opts?.onResultDownloading?.({ jobId })
+      return getHostedImageJobResult(jobId)
+    }
     if (status.state === 'error') throw new Error(status.error || '后台托管任务失败')
     if (status.state === 'expired') throw new Error('后台托管任务结果已过期，请重新生成')
     await new Promise((resolve) => setTimeout(resolve, JOB_STATUS_POLL_MS))

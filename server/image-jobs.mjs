@@ -17,6 +17,9 @@ const RESULT_RATE_LIMIT_BYTES = Math.max(64 * 1024, Number(process.env.JOB_RESUL
 const UPSTREAM_TIMEOUT_MS = Math.max(30, Number(process.env.JOB_UPSTREAM_TIMEOUT_SECONDS || 900)) * 1000
 const MAX_IMAGE_INPUT_PAYLOAD_BYTES = Math.max(1024 * 1024, Number(process.env.JOB_MAX_IMAGE_INPUT_PAYLOAD_BYTES || 512 * 1024 * 1024))
 const JOB_DATA_DIR = process.env.JOB_DATA_DIR || '/tmp/gpt-image-playground-jobs'
+const UPSTREAM_BASE_URL = normalizeBaseUrl(process.env.JOB_UPSTREAM_BASE_URL || '')
+const UPSTREAM_API_KEY = (process.env.JOB_UPSTREAM_API_KEY || '').trim()
+const UPSTREAM_MODEL = (process.env.JOB_UPSTREAM_MODEL || 'gpt-image-2').trim()
 const ALLOWED_BASE_URLS = (process.env.JOB_ALLOWED_BASE_URLS || 'https://api.ciyuanshen.top/v1,https://ciyuanshen.top/v1')
   .split(',')
   .map((item) => normalizeBaseUrl(item))
@@ -365,9 +368,47 @@ async function cleanupExpiredJobs() {
   }
 }
 
+function validateHostedServerConfigPayload(payload) {
+  if (!payload || typeof payload !== 'object') throw Object.assign(new Error('请求格式无效'), { statusCode: 400 })
+  if (!UPSTREAM_BASE_URL) throw Object.assign(new Error('服务器未配置 JOB_UPSTREAM_BASE_URL'), { statusCode: 503 })
+  if (!isAllowedBaseUrl(UPSTREAM_BASE_URL)) throw Object.assign(new Error(`后台托管服务器配置的 API URL 不在白名单内；当前允许：${formatAllowedBaseUrls()}`), { statusCode: 503 })
+  if (!UPSTREAM_API_KEY) throw Object.assign(new Error('服务器未配置 JOB_UPSTREAM_API_KEY'), { statusCode: 503 })
+  if (typeof payload.prompt !== 'string' || !payload.prompt.trim()) throw Object.assign(new Error('缺少提示词'), { statusCode: 400 })
+  if (!UPSTREAM_MODEL) throw Object.assign(new Error('服务器未配置 JOB_UPSTREAM_MODEL'), { statusCode: 503 })
+  if (!/^gpt-image-2(?:-(?:1k|2k|4k))?$/.test(UPSTREAM_MODEL)) throw Object.assign(new Error('后台托管第一版仅允许 gpt-image-2 系列模型'), { statusCode: 503 })
+  const inputImageDataUrls = Array.isArray(payload.inputImageDataUrls)
+    ? payload.inputImageDataUrls.filter((item) => typeof item === 'string' && item.startsWith('data:'))
+    : []
+  if (inputImageDataUrls.length > 16) throw Object.assign(new Error('后台托管最多支持 16 张参考图'), { statusCode: 400 })
+  const maskDataUrl = typeof payload.maskDataUrl === 'string' && payload.maskDataUrl.startsWith('data:') ? payload.maskDataUrl : undefined
+  if (maskDataUrl && inputImageDataUrls.length === 0) throw Object.assign(new Error('遮罩任务必须包含主图'), { statusCode: 400 })
+  const inputPayloadBytes = inputImageDataUrls.reduce((sum, item) => sum + item.length, 0) + (maskDataUrl?.length || 0)
+  if (inputPayloadBytes > MAX_IMAGE_INPUT_PAYLOAD_BYTES) throw Object.assign(new Error('参考图或遮罩数据过大'), { statusCode: 413 })
+  const params = payload.params && typeof payload.params === 'object' ? payload.params : {}
+  return {
+    baseUrl: UPSTREAM_BASE_URL,
+    apiKey: UPSTREAM_API_KEY,
+    model: UPSTREAM_MODEL,
+    prompt: payload.prompt.trim(),
+    responseFormatB64Json: payload.responseFormatB64Json === true,
+    inputImageDataUrls,
+    maskDataUrl,
+    params: {
+      size: typeof params.size === 'string' && params.size ? params.size : 'auto',
+      quality: ['auto', 'low', 'medium', 'high'].includes(params.quality) ? params.quality : 'auto',
+      output_format: ['png', 'jpeg', 'webp'].includes(params.output_format) ? params.output_format : 'png',
+      output_compression: typeof params.output_compression === 'number' ? params.output_compression : null,
+      moderation: ['auto', 'low'].includes(params.moderation) ? params.moderation : 'auto',
+      n: Number.isFinite(Number(params.n)) ? Math.max(1, Math.min(10, Math.trunc(Number(params.n)))) : 1,
+    },
+  }
+}
+
 function validateCreatePayload(payload) {
   if (!payload || typeof payload !== 'object') throw Object.assign(new Error('请求格式无效'), { statusCode: 400 })
-  const baseUrl = normalizeBaseUrl(payload.baseUrl)
+  if (!UPSTREAM_BASE_URL) throw Object.assign(new Error('服务器未配置 JOB_UPSTREAM_BASE_URL'), { statusCode: 503 })
+  if (!isAllowedBaseUrl(UPSTREAM_BASE_URL)) throw Object.assign(new Error(`后台托管服务器配置的 API URL 不在白名单内；当前允许：${formatAllowedBaseUrls()}`), { statusCode: 503 })
+  if (!UPSTREAM_API_KEY) throw Object.assign(new Error('服务器未配置 JOB_UPSTREAM_API_KEY'), { statusCode: 503 })
   if (!isAllowedBaseUrl(baseUrl)) throw Object.assign(new Error(`后台托管不允许请求此 API URL。请填写完整 /v1 地址；当前允许：${formatAllowedBaseUrls()}`), { statusCode: 400 })
   if (typeof payload.apiKey !== 'string' || !payload.apiKey.trim()) throw Object.assign(new Error('缺少 API Key'), { statusCode: 400 })
   if (typeof payload.prompt !== 'string' || !payload.prompt.trim()) throw Object.assign(new Error('缺少提示词'), { statusCode: 400 })
@@ -468,7 +509,7 @@ async function handle(req, res) {
       sendError(res, 429, '后台托管队列已满，请稍后再试')
       return
     }
-    const payload = validateCreatePayload(await readRequestJson(req, MAX_IMAGE_INPUT_PAYLOAD_BYTES + 1024 * 1024))
+    const payload = validateHostedServerConfigPayload(await readRequestJson(req, MAX_IMAGE_INPUT_PAYLOAD_BYTES + 1024 * 1024))
     const id = createJobId()
     const job = {
       id,

@@ -188,6 +188,8 @@ export interface TaskRecord {
   hostedJobId?: string
   /** 后台托管任务是否等待自动恢复 */
   hostedRecoverable?: boolean
+  /** 后台托管任务已完成，前端正在下载结果 */
+  hostedDownloading?: boolean
   /** API 返回的实际生效参数，用于标记与请求值不一致的情况 */
   actualParams?: Partial<TaskParams>
   /** 输出图片对应的实际生效参数，key 为 outputImages 中的图片 id */

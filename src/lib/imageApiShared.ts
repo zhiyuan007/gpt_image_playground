@@ -20,6 +20,7 @@ export interface CallApiOptions {
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
   onHostedJobCreated?: (job: { jobId: string }) => void
+  onHostedJobResultDownloading?: (job: { jobId: string }) => void
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void
 }
 
