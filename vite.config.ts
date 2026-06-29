@@ -19,14 +19,15 @@ function loadDevProxyConfig() {
 
 export default defineConfig(({ command }) => {
   const devProxyConfig = command === 'serve' ? loadDevProxyConfig() : null
+  const hostedJobProxyTarget = process.env.JOB_PROXY_TARGET || 'http://127.0.0.1:3001'
   const hostedJobProxy = command === 'serve'
     ? {
         '/api/job-auth': {
-          target: 'http://127.0.0.1:3001',
+          target: hostedJobProxyTarget,
           changeOrigin: true,
         },
         '/api/image-jobs': {
-          target: 'http://127.0.0.1:3001',
+          target: hostedJobProxyTarget,
           changeOrigin: true,
         },
       }

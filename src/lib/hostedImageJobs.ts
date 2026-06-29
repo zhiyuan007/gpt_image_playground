@@ -158,6 +158,12 @@ export function getHostedImageJobResult(jobId: string): Promise<CallApiResult> {
   return requestJson<CallApiResult>(`/api/image-jobs/${encodeURIComponent(jobId)}/result`)
 }
 
+export async function acknowledgeHostedImageJob(jobId: string): Promise<void> {
+  await requestJson<{ ok: true }>(`/api/image-jobs/${encodeURIComponent(jobId)}/ack`, {
+    method: 'POST',
+  })
+}
+
 export async function deleteHostedImageJob(jobId: string): Promise<void> {
   await requestJson<{ ok: true }>(`/api/image-jobs/${encodeURIComponent(jobId)}`, {
     method: 'DELETE',

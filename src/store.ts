@@ -48,7 +48,7 @@ import { showBrowserNotification } from './lib/browserNotification'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
-import { deleteHostedImageJob, getHostedImageJobResult, getHostedImageJobStatus } from './lib/hostedImageJobs'
+import { acknowledgeHostedImageJob, deleteHostedImageJob, getHostedImageJobResult, getHostedImageJobStatus } from './lib/hostedImageJobs'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
@@ -4587,7 +4587,7 @@ function normalizeFavoritePatch(task: TaskRecord, patch: Partial<TaskRecord>, de
   return patch
 }
 
-export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>) {
+export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>, options?: { persist?: boolean }): TaskRecord | undefined {
   const { tasks, setTasks, defaultFavoriteCollectionId } = useStore.getState()
   const updated = tasks.map((t) =>
     t.id === taskId ? { ...t, ...normalizeFavoritePatch(t, patch, defaultFavoriteCollectionId) } : t,
@@ -4595,7 +4595,8 @@ export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>) {
   const task = updated.find((t) => t.id === taskId)
   setTasks(updated)
   maybeOpenSupportPrompt(tasks, updated, taskId)
-  if (task) putTask(task)
+  if (task && options?.persist !== false) putTask(task)
+  return task
 }
 
 function normalizeFavoriteCollectionIds(ids: unknown) {
@@ -5074,7 +5075,7 @@ async function completeRecoveredHostedJobTask(task: TaskRecord, result: Awaited<
     return acc
   }, {})
 
-  updateTaskInStore(task.id, {
+  const completedTask = updateTaskInStore(task.id, {
     outputImages: outputIds,
     transparentOriginalImages: transparentOriginalImageIds,
     outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
@@ -5088,8 +5089,9 @@ async function completeRecoveredHostedJobTask(task: TaskRecord, result: Awaited<
     hostedDownloading: false,
     finishedAt: Date.now(),
     elapsed: Date.now() - task.createdAt,
-  })
-  if (task.hostedJobId) void deleteHostedImageJob(task.hostedJobId)
+  }, { persist: false })
+  if (completedTask) await putTask(completedTask)
+  if (task.hostedJobId) void acknowledgeHostedImageJob(task.hostedJobId)
   useStore.getState().showToast(`后台托管任务已恢复，共 ${outputIds.length} 张图片`, 'success')
   if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `后台托管任务已恢复，共 ${outputIds.length} 张图片。`)
 }

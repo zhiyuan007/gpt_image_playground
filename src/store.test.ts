@@ -92,6 +92,17 @@ vi.mock('./lib/falAiImageApi', () => ({
     revisedPrompts: [],
   })),
 }))
+vi.mock('./lib/hostedImageJobs', () => ({
+  getHostedImageJobStatus: vi.fn(async () => ({ id: 'hosted-job', state: 'done' })),
+  getHostedImageJobResult: vi.fn(async () => ({
+    images: [],
+    actualParams: {},
+    actualParamsList: [],
+    revisedPrompts: [],
+  })),
+  acknowledgeHostedImageJob: vi.fn(async () => {}),
+  deleteHostedImageJob: vi.fn(async () => {}),
+}))
 vi.mock('./lib/transparentImage', () => ({
   GREEN_KEY_COLOR: '#00FF00',
   MAGENTA_KEY_COLOR: '#FF00FF',
@@ -130,6 +141,7 @@ vi.mock('./lib/agentApi', () => ({
 import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversations, getAllTasks, getImage, putAgentConversation, putImage, putTask as putDbTask } from './lib/db'
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
+import { acknowledgeHostedImageJob, deleteHostedImageJob, getHostedImageJobResult, getHostedImageJobStatus } from './lib/hostedImageJobs'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
@@ -784,6 +796,71 @@ describe('fal task recovery', () => {
     const originalImage = await getImage(recovered!.transparentOriginalImages![0])
     expect(outputImage?.dataUrl).toBe('transparent:data:image/png;base64,fal-recovered')
     expect(originalImage?.dataUrl).toBe('data:image/png;base64,fal-recovered')
+  })
+})
+
+describe('hosted job recovery', () => {
+  beforeEach(async () => {
+    await clearTasks()
+    await clearImages()
+    vi.mocked(getHostedImageJobStatus).mockClear()
+    vi.mocked(getHostedImageJobResult).mockClear()
+    vi.mocked(acknowledgeHostedImageJob).mockClear()
+    vi.mocked(deleteHostedImageJob).mockClear()
+    vi.mocked(removeKeyedBackgroundFromDataUrl).mockClear()
+    useStore.setState({
+      settings: normalizeSettings(DEFAULT_SETTINGS),
+      tasks: [],
+      inputImages: [],
+      galleryInputDraft: null,
+      agentConversations: [],
+      showToast: vi.fn(),
+    })
+  })
+
+  it('acknowledges a hosted result only after recovered images are stored', async () => {
+    const hostedTask = task({
+      id: 'hosted-task',
+      apiProvider: 'openai',
+      apiProfileId: 'openai-profile',
+      apiProfileName: 'openai',
+      apiModel: 'gpt-image-2',
+      status: 'running',
+      error: null,
+      outputImages: [],
+      hostedJobId: 'hosted-job-1',
+      hostedRecoverable: true,
+      hostedDownloading: false,
+      finishedAt: null,
+      elapsed: null,
+    })
+    await putDbTask(hostedTask)
+    vi.mocked(getHostedImageJobStatus).mockResolvedValueOnce({
+      id: 'hosted-job-1',
+      state: 'done',
+    })
+    vi.mocked(getHostedImageJobResult).mockResolvedValueOnce({
+      images: ['data:image/png;base64,hosted-recovered'],
+      actualParams: { output_format: 'png' },
+      actualParamsList: [{ output_format: 'png' }],
+      revisedPrompts: [],
+    })
+
+    await initStore()
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    const recovered = useStore.getState().tasks.find((item) => item.id === hostedTask.id)
+    expect(recovered).toMatchObject({
+      status: 'done',
+      hostedRecoverable: false,
+      hostedDownloading: false,
+    })
+    const outputImage = await getImage(recovered!.outputImages[0])
+    expect(outputImage?.dataUrl).toBe('data:image/png;base64,hosted-recovered')
+    expect(acknowledgeHostedImageJob).toHaveBeenCalledWith('hosted-job-1')
+    expect(deleteHostedImageJob).not.toHaveBeenCalled()
   })
 })
 

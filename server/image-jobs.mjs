@@ -31,6 +31,7 @@ const loginAttempts = new Map()
 let activeCount = 0
 
 await mkdir(JOB_DATA_DIR, { recursive: true })
+await loadPersistedJobs()
 
 function now() {
   return Date.now()
@@ -175,7 +176,103 @@ function resultPathFor(jobId) {
   return path.join(JOB_DATA_DIR, `${jobId}.json`)
 }
 
-function extractResult(payload, fallbackMime) {
+function metadataPathFor(jobId) {
+  return path.join(JOB_DATA_DIR, `${jobId}.meta.json`)
+}
+
+function getPersistableJob(job) {
+  return {
+    id: job.id,
+    ownerSessionId: job.ownerSessionId,
+    state: job.state,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    expiresAt: job.expiresAt,
+    error: job.error,
+    resultFile: job.resultFile,
+  }
+}
+
+async function persistJob(job) {
+  await writeFile(metadataPathFor(job.id), JSON.stringify(getPersistableJob(job)), 'utf8')
+}
+
+async function safePersistJob(job) {
+  try {
+    await persistJob(job)
+  } catch (error) {
+    console.warn('后台托管任务状态持久化失败', error)
+  }
+}
+
+async function removeJob(jobId) {
+  const job = jobs.get(jobId)
+  if (job?.resultFile) await rm(job.resultFile, { force: true })
+  await rm(metadataPathFor(jobId), { force: true })
+  jobs.delete(jobId)
+  const queueIndex = queue.indexOf(jobId)
+  if (queueIndex >= 0) queue.splice(queueIndex, 1)
+}
+
+async function loadPersistedJobs() {
+  let names = []
+  try {
+    names = await readdir(JOB_DATA_DIR)
+  } catch {
+    return
+  }
+
+  for (const name of names) {
+    if (!name.endsWith('.meta.json')) continue
+    const filePath = path.join(JOB_DATA_DIR, name)
+    const payload = safeJsonParse(await readFile(filePath, 'utf8'))
+    if (!payload || typeof payload !== 'object' || typeof payload.id !== 'string' || typeof payload.ownerSessionId !== 'string') {
+      await rm(filePath, { force: true })
+      continue
+    }
+
+    const job = {
+      id: payload.id,
+      ownerSessionId: payload.ownerSessionId,
+      state: ['queued', 'running', 'done', 'error', 'expired'].includes(payload.state) ? payload.state : 'error',
+      createdAt: Number(payload.createdAt) || now(),
+      startedAt: typeof payload.startedAt === 'number' ? payload.startedAt : null,
+      finishedAt: typeof payload.finishedAt === 'number' ? payload.finishedAt : null,
+      expiresAt: typeof payload.expiresAt === 'number' ? payload.expiresAt : null,
+      error: typeof payload.error === 'string' ? payload.error : undefined,
+      resultFile: typeof payload.resultFile === 'string' ? payload.resultFile : undefined,
+    }
+
+    if (job.state === 'queued' || job.state === 'running') {
+      job.state = 'error'
+      job.error = '后台托管服务已重启，未完成的任务无法继续，请重新生成。'
+      job.finishedAt = now()
+      job.expiresAt = job.finishedAt + RESULT_TTL_MS
+    }
+    if (job.state === 'done' && job.resultFile) {
+      try {
+        await stat(job.resultFile)
+      } catch {
+        job.state = 'expired'
+        job.error = '后台托管任务结果已过期，请重新生成。'
+        job.resultFile = undefined
+      }
+    }
+    jobs.set(job.id, job)
+    await safePersistJob(job)
+  }
+}
+
+async function fetchImageUrlAsDataUrl(url, fallbackMime) {
+  const response = await fetch(url, { cache: 'no-store' })
+  if (!response.ok) throw new Error(`图片 URL 下载失败：HTTP ${response.status}`)
+  const contentType = response.headers.get('content-type')?.split(';')[0]?.trim() || fallbackMime
+  const buffer = Buffer.from(await response.arrayBuffer())
+  return `data:${contentType || fallbackMime};base64,${buffer.toString('base64')}`
+}
+
+async function extractResult(payload, fallbackMime) {
   const data = Array.isArray(payload?.data) ? payload.data : []
   const images = []
   const actualParamsList = []
@@ -185,7 +282,7 @@ function extractResult(payload, fallbackMime) {
     if (typeof item?.b64_json === 'string' && item.b64_json) {
       images.push(`data:${fallbackMime};base64,${item.b64_json}`)
     } else if (typeof item?.url === 'string' && item.url) {
-      images.push(item.url)
+      images.push(await fetchImageUrlAsDataUrl(item.url, fallbackMime))
       rawImageUrls.push(item.url)
     }
     actualParamsList.push(pickActualParams(item))
@@ -268,6 +365,7 @@ async function runJob(job) {
   activeCount += 1
   job.state = 'running'
   job.startedAt = now()
+  await safePersistJob(job)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
 
@@ -307,7 +405,7 @@ async function runJob(job) {
       const message = payload?.error?.message || payload?.message || text || `HTTP ${response.status}`
       throw new Error(String(message))
     }
-    const result = extractResult(payload, getMime(job.params.output_format))
+    const result = await extractResult(payload, getMime(job.params.output_format))
     if (!result.images.length) throw new Error('接口未返回可识别的图片数据')
 
     await writeFile(resultPathFor(job.id), JSON.stringify(result), 'utf8')
@@ -325,6 +423,7 @@ async function runJob(job) {
     job.apiKey = ''
     job.inputImageDataUrls = []
     job.maskDataUrl = undefined
+    await safePersistJob(job)
     activeCount -= 1
     processQueue()
     void cleanupExpiredJobs()
@@ -344,15 +443,13 @@ async function cleanupExpiredJobs() {
   const current = now()
   for (const job of jobs.values()) {
     if ((job.state === 'done' || job.state === 'error' || job.state === 'expired') && job.expiresAt && job.expiresAt <= current) {
-      if (job.resultFile) await rm(job.resultFile, { force: true })
-      job.state = 'expired'
-      jobs.delete(job.id)
+      await removeJob(job.id)
     }
   }
 
   let entries = []
   try {
-    entries = await Promise.all((await readdir(JOB_DATA_DIR)).map(async (name) => {
+    entries = await Promise.all((await readdir(JOB_DATA_DIR)).filter((name) => name.endsWith('.json') && !name.endsWith('.meta.json')).map(async (name) => {
       const filePath = path.join(JOB_DATA_DIR, name)
       const info = await stat(filePath)
       return { filePath, mtimeMs: info.mtimeMs, size: info.size }
@@ -364,6 +461,14 @@ async function cleanupExpiredJobs() {
   for (const entry of entries.sort((a, b) => a.mtimeMs - b.mtimeMs)) {
     if (total <= MAX_STORAGE_BYTES) break
     await rm(entry.filePath, { force: true })
+    for (const job of jobs.values()) {
+      if (job.resultFile !== entry.filePath) continue
+      job.state = 'expired'
+      job.error = '后台托管任务结果已过期，请重新生成。'
+      job.resultFile = undefined
+      await safePersistJob(job)
+      break
+    }
     total -= entry.size
   }
 }
@@ -442,7 +547,7 @@ function validateCreatePayload(payload) {
   }
 }
 
-async function sendThrottledFile(res, filePath, onDone) {
+async function sendThrottledFile(res, filePath) {
   const stream = createReadStream(filePath, { highWaterMark: Math.min(64 * 1024, RESULT_RATE_LIMIT_BYTES) })
   res.writeHead(200, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -454,7 +559,6 @@ async function sendThrottledFile(res, filePath, onDone) {
     if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs))
   }
   res.end()
-  onDone?.()
 }
 
 async function handle(req, res) {
@@ -524,28 +628,42 @@ async function handle(req, res) {
       ...payload,
     }
     jobs.set(id, job)
+    await safePersistJob(job)
     queue.push(id)
     processQueue()
     sendJson(res, 202, { jobId: id, status: publicJob(job) })
     return
   }
 
-  const jobMatch = url.pathname.match(/^\/api\/image-jobs\/([^/]+)(?:\/result)?$/)
-  if (jobMatch && ['GET', 'DELETE'].includes(req.method || '')) {
+  const jobMatch = url.pathname.match(/^\/api\/image-jobs\/([^/]+)(?:\/(result|ack))?$/)
+  if (jobMatch && ['GET', 'POST', 'DELETE'].includes(req.method || '')) {
     const session = requireAuth(req, res)
     if (!session) return
     const jobId = decodeURIComponent(jobMatch[1])
+    const action = jobMatch[2] || ''
     const job = jobs.get(jobId)
     if (!job || job.ownerSessionId !== session.sessionId) {
       sendError(res, 404, '后台托管任务不存在或已过期')
       return
     }
 
+    if (action === 'ack') {
+      if (req.method !== 'POST') {
+        sendError(res, 405, 'Method not allowed')
+        return
+      }
+      await removeJob(jobId)
+      sendJson(res, 200, { ok: true })
+      return
+    }
+
+    if (action === 'result' && req.method !== 'GET') {
+      sendError(res, 405, 'Method not allowed')
+      return
+    }
+
     if (req.method === 'DELETE') {
-      if (job.resultFile) await rm(job.resultFile, { force: true })
-      jobs.delete(jobId)
-      const queueIndex = queue.indexOf(jobId)
-      if (queueIndex >= 0) queue.splice(queueIndex, 1)
+      await removeJob(jobId)
       sendJson(res, 200, { ok: true })
       return
     }
@@ -555,10 +673,7 @@ async function handle(req, res) {
         sendError(res, job.state === 'expired' ? 410 : 409, job.error || '任务尚未完成')
         return
       }
-      await sendThrottledFile(res, job.resultFile, () => {
-        void rm(job.resultFile, { force: true })
-        jobs.delete(jobId)
-      })
+      await sendThrottledFile(res, job.resultFile)
       return
     }
 
